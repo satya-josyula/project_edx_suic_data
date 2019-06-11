@@ -4,6 +4,6 @@ https://www.worldbank.org/en/about/legal/terms-of-use-for-datasets
 
 The data should be downloaded from this location, copied to c:\GitHub\EDXProject before running the program.
 For running in another Operating System or with a changed path, please alter the .Rmd program and run.
-If you have stable connection, the Rmd may be edited to switch to Github and run.
+If you have stable connection, the Rmd may be edited to switch to Github and run. But directly using the link to read in R did not work for me.
 
 The data is shown on world map in the report. If there is no support for Geo on the machine running the Rmd, you may remove the parts that reference geospatial data and rerun.
