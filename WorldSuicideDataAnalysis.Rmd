@@ -1,0 +1,755 @@
+---
+title: "World Suicide Data"
+author: "Satya Josyula"
+date: "June 9, 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+# About
+
+-------------------------------------------------------
+**World Suicide Data - Analysis**
+*This document is prepared as part of the project submission for Data Science Professional Certification*
+-------------------------------------------------------
+
+# Preface
+
+This exercise is an attempt to analyze the suicides data from across the world provided by the World Bank. 
+The ultimate act of someone taking their own life depends on several Social, Economic and Political factors. With the wide disparities in the economic and social environment, political stability across the countries and regions of the world, this exercise tries to bring in few more factors that could be effecting the suicide rates across the world. More features from other data sources are  added to the suicide data to get better insights into factors leading to the varied intensity of suicides. Various models are explored to predict the suicide rates across the countries for different population groups. Data is available from 1985 to 2016, with data for 2016 being very sparse.     
+Note: World Geo-spatial data is used to present disparities on the world map. Required software would need to be installed in the machine running this program.
+
+```{r load, echo=FALSE}
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(sf)) install.packages("sf", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(readr)) install.packages("readr", repos = "http://cran.us.r-project.org")
+if(!require(rnaturalearth)) install.packages("rnaturalearth", repos = "http://cran.us.r-project.org")
+if(!require(rnaturalearthdata)) install.packages("rnaturalearthdata", repos = "http://cran.us.r-project.org")
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org")
+if(!require(kableExtra)) install.packages("kableExtra", repos = "http://cran.us.r-project.org")
+theme_set(theme_bw())
+```
+
+# Data Source used
+
+The data source used is from Kaggle, sourced from World Bank under the Terms of Use as listed below.    
+https://www.kaggle.com/russellyates88/suicide-rates-overview-1985-to-2016    
+https://www.worldbank.org/en/about/legal/terms-of-use-for-datasets    
+World-wide geometric and economic indicators from Natural Earth Data libraries.
+
+# Load data from the CSV to Data Frame. 
+
+Load data into a data frame and remove any redundant data columns and alter column names to make them more inline with rest of the columns.
+
+```{r load_suicide_data, echo=FALSE}
+suicide_data <- read_csv("C:/GitHub/EDXProject/master.csv") 
+suicide_data$`country-year`<- NULL
+suicide_data$`suicides/100k pop` <- NULL
+suicide_data$`HDI for year` <- NULL
+suicide_data$`gdp_for_year ($)` <- NULL
+names(suicide_data)[7] <- c("gdp_per_capita")
+suicide_data <- data.frame(suicide_data)
+suicide_data$age[data.frame(suicide_data)$age=="5-14 years"] <- "05-14 years"
+age_group <- suicide_data %>% distinct(age) %>% arrange(age) %>% mutate(agegroupid=row_number()) %>% data.frame()
+generation <- suicide_data %>% distinct(generation) %>% mutate(generationid=row_number())
+```
+
+# Get world geo data to get more insights into region wise intensity of suicides
+
+We combine some economic indicators of the countries in the world with the suicide rates data available and find any correlations between these indicators and suicide rates.
+
+```{r getworld, echo=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world_points<- st_centroid(world)
+world_points <- cbind(world, st_coordinates(st_centroid(world$geometry)))
+
+world_new <- world_points %>% select(name_long,economy,income_grp,continent,subregion,geometry)
+world_new <- world_new %>% mutate(economy=sub(".*\\. ", "", economy),income_grp=sub(".*\\. ", "", income_grp))
+
+economy <- world_new$economy %>% data.frame() %>% distinct() %>% mutate(eco_id=row_number())
+names(economy) <- c("economy","eco_id")
+income_grp <- world_new$income_grp %>% data.frame() %>% distinct() %>% mutate(ig_id=row_number())
+names(income_grp) <- c("income_grp","ig_id")
+subregion <- world_new$subregion %>% data.frame() %>% distinct() %>% mutate(subregion_id=row_number())
+names(subregion) <- c("subregion","subregion_id")
+continent <- world_new$continent %>% data.frame() %>% distinct() %>% mutate(continent_id=row_number())
+names(continent) <- c("continent","continent_id")
+country <- world_new %>% select(name_long) %>% distinct() %>% mutate(country=name_long,countryid=row_number()) %>% data.frame()
+world_data <- world_new %>% left_join(economy,by="economy") %>% left_join(income_grp,by="income_grp") %>% left_join(continent,by="continent") %>% left_join(subregion,by="subregion") %>% inner_join(country,by=c("name_long"="country")) %>% select(countryid,eco_id,continent_id,subregion_id,ig_id)
+world_data$geometry.x <- NULL
+suicide_data <- suicide_data %>% left_join(generation,by="generation") %>% left_join(age_group,by="age") %>% inner_join(country,by="country") %>%
+  mutate(sexid=case_when(sex=="male" ~ 0, TRUE ~ 1)) %>% select(countryid,agegroupid,generationid,suicides_no,year,sexid,population,gdp_per_capita)
+cor(suicide_data) %>% knitr::kable(digits = 3) %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+```
+
+Correlation matrix of the suicides data combined with world data shows not much correlation between the variables.
+
+## Variations in suicide rates across the countries in the world.
+
+The data we merged has some macro indicators about the economies, regions they belong among others. These indicators help us get better insights into the suicide trends across several other factors than the ones currently available.
+We can see the heat mapped presentation of suicide rates across the world at file year intervals since 1990.
+
+```{r merge_world_suicide, echo=FALSE}
+# Merge with world data for showing on World maps
+new <- suicide_data %>% mutate(suic_rate=round(suicides_no*100000/population,2)) %>% inner_join(data.frame(world_data),by=c("countryid"))
+# Facet Wrap all countries
+new %>% filter(year %in% c(1990,1995,2000,2005,2010,2014)) %>% group_by(year,countryid) %>% summarize(suic_rate=sum(suicides_no)*100000/sum(population)) %>% inner_join(country,by=c("countryid")) %>%
+  ggplot() + # data = new) +
+  geom_sf(aes(fill = suic_rate)) +
+  scale_fill_viridis_c(option = "plasma", trans = "sqrt") + facet_wrap(~ year,nrow = 3)
+new$geometry <- NULL
+```
+
+## Variations in suicide rates across different age groups
+
+Causes for suicides vary across different age groups. Following image shows how suicide rates are influenced by age.
+
+```{r age_group, echo=FALSE}
+new %>% inner_join(age_group,by="agegroupid") %>%  group_by(age,agegroupid) %>% 
+  summarize(suic_rate=sum(suicides_no)*100000/sum(as.numeric(population))) %>% 
+  data.frame() %>% arrange(age,agegroupid,suic_rate) %>% 
+  ggplot() + geom_point(aes(x=age,y=suic_rate))+ theme(axis.text.x = element_text(angle = 90, hjust = 1)) + geom_smooth(aes(agegroupid,suic_rate))
+```
+
+Suicide rate across different age groups shows uptrend in rate as population ages.Age and mix of the population in different age groups influences the overall suicide rate for a country. Let us see if the same trend is there in all continents of the earth.
+
+## Variations across different age group in various continents.
+
+Following image shows the trends in suicide rates across ages in different contents of the world.
+
+```{r age_cont,echo=FALSE}
+new %>% inner_join(age_group,by="agegroupid") %>% inner_join(continent,by="continent_id") %>%  group_by(continent,age) %>% 
+  summarize(suic_rate=sum(suicides_no)*100000/sum(as.numeric(population))) %>% 
+  data.frame() %>% arrange(age,suic_rate) %>% 
+  ggplot(mapping = aes(group=continent)) + geom_smooth(aes(x=age,y=suic_rate,color=continent)) + 
+  facet_wrap(~ continent) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+If we look at the trends of suicides as the population ages, all major continents show almost similar trend of rising suicide rates as the population ages. But Ocenia and Open seas see a peak in the age group of 25-34 years and comes down and flattens with age. Rise in suicide rates as population ages is more steep in Asia and Europe than South America and North America.
+
+## Variations in suicide rates across different age groups for male and female
+
+Male and Female population react differently to different situations. That would reflect in the extreme steps they take in different situations. Following graph shows the trends for both sexes.
+
+```{r men_women_age,echo=FALSE}
+new %>% inner_join(age_group,by="agegroupid") %>% mutate(sex=case_when (sexid==0 ~ "Male", TRUE ~ "Female")) %>% group_by(year,agegroupid,age,sex) %>% 
+  summarize(suic_rate=sum(suicides_no)*100000/sum(as.numeric(population))) %>% 
+  data.frame() %>% arrange(sex,agegroupid,suic_rate) %>% 
+  ggplot(aes(suic_rate/year, rate_range)) + geom_path(aes(x=age,y=suic_rate,color=age,size=0.2)) + 
+  facet_wrap(~ sex)  + theme(axis.text.x = element_text(angle = 90, hjust = 1)) # + coord_flip()
+```
+
+Suicide rates among men are significantly higher than women across all the age groups, except 5-14 years. The rise in suicide rates among women is not as intense as men as they age. Sex could be a dominant factor in determining suicide rates.
+
+## Overall suicide rates across continents.
+
+```{r cont,echo=FALSE}
+new %>% inner_join(continent,by="continent_id") %>% group_by(year,continent,continent_id) %>% 
+  summarize(suic_rate=sum(suicides_no)*100000/sum(population)) %>% 
+  data.frame() %>% arrange(continent_id,year,suic_rate) %>% ggplot(mapping = aes(group=continent_id)) + 
+  geom_smooth(aes(x=year,y=suic_rate,color=continent)) + facet_wrap(~continent)
+```
+
+Suicide rates in continents Asia, North Americ and Europe have seen declining trend for the past two decades. South America and Africa (South Africa) see a little uptrend. Other Oceania and Open Oceans see a cyclic trend.
+
+## Suicide trends across years for both sexes.
+
+```{r sex,echo=FALSE}
+new %>% mutate(sex=case_when(sexid==0 ~ "Male", TRUE ~ "Female")) %>% group_by(year,sex) %>% 
+  summarize(suic_rate=sum(suicides_no)*100000/sum(population)) %>% 
+  data.frame() %>% arrange(year,suic_rate)%>% ggplot(mapping = aes(group=sex)) + 
+  geom_smooth(aes(x=year,y=suic_rate,color=sex))
+```
+Suicide rates among men are almost three times more than women. Rates among both men and women are declining in the same proportion.
+
+## Suicide rate trends across different generations.
+Causes for suicides vary for each generation of population. They could be factors ranging from economic, health, age etc.
+
+```{r gen,echo=FALSE}
+new %>% inner_join(generation,by="generationid") %>% group_by(year,generation,generationid) %>% 
+  summarize(suic_rate=sum(suicides_no)*100000/sum(population)) %>% 
+  data.frame() %>% arrange(generationid,year,suic_rate) %>% ggplot(mapping = aes(group=generation)) + 
+  geom_smooth(aes(x=year,y=suic_rate,color=factor(generation)))
+```
+The Generation wise suicide trends show that Generation-X have a raising suicide rate in general. Millennials experienced a rising suicide rate and started declining. Silent generation have seen a decline in rates but started to see rising suicide rates again. Generation Z, the youngest ones have a flat suicide rate. Boomers see declining suicide rates.
+
+## Influence of Economy on Suicide rates.
+
+Macro economic factors could cause variations in suicide rates. Stress in Developed economies and poverty in less developed economies could be causes for suicides.
+
+```{r eco,echo=FALSE}
+new %>% inner_join(economy,by="eco_id") %>% group_by(year,economy,eco_id) %>% 
+  summarize(suic_rate=sum(suicides_no)*100000/sum(population)) %>% 
+  data.frame() %>% arrange(year,suic_rate) %>% ggplot(mapping = aes(group=eco_id)) + 
+  geom_smooth(aes(x=year,y=suic_rate,color=factor(economy))) + facet_wrap(~economy)
+```
+If we look at countries as w whole in various economic development stages, Developed Regions have a constant suicide rate of around 15. Developing and Emerging nations (BRIC) have declining suicide rates. Emerging Regions (MIKT) had seen an uptrend and started declining. Least Developed countries are shown to have fastly decling suicide rates, but we dont have enough data.
+
+## Variations in suicide rates across Subregions of world.
+
+World is divided into several subregions, ecah could have their own culteral and economic factors influencing the suicide rates.
+
+```{r subreg,echo=FALSE}
+new %>% inner_join(subregion,by="subregion_id") %>% group_by(year,subregion,subregion_id) %>% 
+  summarize(suic_rate=sum(suicides_no)*100000/sum(population)) %>% 
+  data.frame() %>% arrange(subregion_id,year,suic_rate) %>% ggplot(mapping = aes(group=subregion_id)) + 
+  geom_smooth(aes(x=year,y=suic_rate,color=factor(subregion))) + facet_wrap(~ subregion) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+Most of the regions have a suicide rate of less than 20 per 100K of population. Southern Asia registered a decline from peak rate of about 40. Eastern Europe has peaked in Mid-90s and in a declining phase. Micronesia and Western Europe have declining suicide rates. We dont have complete data for Melanesia, Micronesia, Southern Africa, Southern Asia regions.
+
+## Income group driven variations in Suicide rates.
+
+This factor could be similar to the economic well being of countries. Income levels of population drive their health and well-being and could have influence of rates of suicides in the population.
+
+```{r inc_grp,echo=FALSE}
+new %>% inner_join(income_grp,by="ig_id") %>% group_by(year,income_grp,ig_id) %>% 
+  summarize(suic_rate=sum(suicides_no)*100000/sum(population)) %>% 
+  data.frame() %>% arrange(ig_id,year,suic_rate) %>% ggplot(mapping = aes(group=ig_id)) + 
+  geom_smooth(aes(x=year,y=suic_rate,color=factor(income_grp))) + facet_wrap(~ income_grp) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+rm(new)
+```
+
+It is seen that countries belonging to High Income: OECD group almost constant Suicide rate and High Income: NonOECD have a suicide rate cycle that was in an uptrend. Low Income and Lower Middle Income countries have a declining suicide rate. Upper Middle Income countries have spiked in the rates and declining suicide rates.
+
+# Classify Suicide Rates
+
+We first attempt to create a Classification model to get accurate predictions of suicide rates and then create a Regression model to get the best RMSE.
+As accurate estimates of the suicide rates is not necessary, We will try to categorize the suicide rates into different levels based on the range of suicide rates. We find that most of the rates fall in under 5 per 100K. We will call the new column as Suicides_Intensity. It ranges from 1 to 9.    
+As the dataset is unbalanced and there is lot of data in the lower suicide rates, the data is classified as below. It can be reclassified to make it more balanced, if needed.
+0-2 : 1, 2-6 : 2, 6-12 : 3, 12-20 : 4, 20-30 : 5, 30-40 : 6, 40-60 : 7, 60-100 : 8, 100+ : 9
+
+```{r modify,echo=FALSE}
+new_suicide_data <- suicide_data %>% mutate(suic_rate=round(suicides_no*100000/population,2))
+new_suicide_data$population <- NULL
+new_suicide_data$suicides_no <- NULL
+new_suicide_data <- new_suicide_data %>% mutate(suicides_intensity=case_when(suic_rate <= 2 ~ 1, suic_rate > 2 & suic_rate <= 6 ~ 2,
+                                                                             suic_rate > 6 & suic_rate <= 12 ~ 3, suic_rate > 12 & suic_rate <= 20 ~ 4,
+                                                                             suic_rate > 20 & suic_rate <= 30 ~ 5, suic_rate > 30 & suic_rate <= 40 ~ 6,
+                                                                             suic_rate > 40 & suic_rate <= 60 ~ 7,
+                                                                             suic_rate > 60 & suic_rate <= 100 ~ 8, TRUE ~ 9))
+
+alldata <- new_suicide_data 
+alldata$suicides_intensity <- factor(alldata$suicides_intensity)
+trainall <- alldata %>% filter(year <= 2014)
+testall <- alldata %>% filter(year == 2015)
+```
+
+# Feature Selection
+
+We begin with the features that originally  came with the suicides data. Then we add more indicators from world data and see if any of those features help improve the model.
+Our target is to select a model that uses lowest number of features and provides us better predictions of suicide rates in a reasonable amount of time given the resources available on the machine running the program.
+Suicide data is not Categorical data. We try to find an algorithm that finds the minimum RMSE. We also attempt to use Classification algorithms to find Accuracy of the model.
+
+## Find High correlation among data
+
+It is important to remove any highly correlated data from the dataset as it will not add much value to the model. We use a cut-off of 0.5. If we find any data that shows more than 0.5 we will remove those columns.
+
+```{r find_cor,echo=FALSE}
+corMatrix <- cor(alldata[,1:6])
+highCorall <- findCorrelation(corMatrix, cutoff=0.5)
+highCorall %>% data.frame()  %>% knitr::kable(col.names=c("Feature Highly Correlated")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+rm(corMatrix,highCorall)
+```
+We dont find any highly correlated factors. So, we will continue with the variables available to us to predict suicide rates.
+
+## Recursive Feature Elimination
+
+We try Recursive Feature Elimination to select only features that help us predict the suicide rates more accurately.
+We will use Random Forest (rf), Linear Discriminant Analysis (lda), Linear Model (lm), Bagged CART (treebag) to find the top features that provide us the best predictions.We use simple Cross Validation at 10 for all trainings.
+
+## RF Functions
+
+We first use the Random Forest method to find contribution of features to the prediction of the Suicide rates. We also will save the statistics for the parameters that provide us the second best estimates.
+
+```{r rf,echo=FALSE}
+control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+## RMSE
+resultsrfall <- rfe(alldata[,1:6], alldata[[7]], sizes=c(1:6), rfeControl=control)
+predictors(resultsrfall) %>% data.frame()  %>% knitr::kable(col.names=c("Variables selected")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))%>% footnote(general = "Variables for Best RMSE")
+res2 <- resultsrfall$results$RMSE %>% data.frame() %>% mutate(n=row_number()) %>% 
+arrange(.) %>% filter(row_number()==2)
+plot(resultsrfall, type=c("g", "o"))
+## Accuracy
+resultsrfallf <- rfe(alldata[,1:6], alldata[[8]], sizes=c(1:6), rfeControl=control)
+predictors(resultsrfallf) %>% data.frame() %>% knitr::kable(col.names=c("Variables selected")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))%>% footnote(general = "Variables for Best Accuracy")
+res1 <- resultsrfallf$results$Accuracy %>% data.frame() %>% mutate(n=row_number()) %>% arrange(desc(.)) %>% filter(row_number()==2)
+plot(resultsrfallf, type=c("g", "o"))
+results <- data_frame(method = "Random Forest",
+              Accu = round(max(resultsrfallf$results$Accuracy*100),2), 
+              RMSE =  round(min(resultsrfall$results$RMSE),2), 
+              Accu_vars = dim(data.frame((predictors(resultsrfallf))))[1], 
+              rmse_vars = dim(data.frame((predictors(resultsrfall))))[1],
+              Sec_accu = round(res1$.*100,2),
+              Sec_RMSE = round(res2$.,2),
+              Sec_accu_Vars = res1$n,
+              Sec_rmse_vars = res2$n)
+rm(resultsrfall,resultsrfallf,res1,res2)
+```
+
+Lowest RMSE of about 11 is achieved with Suicide Rates prediction.
+Peak Accuracy of little more than 72% is acheived with predicting categorized Suicides_Intensity when we used 5 variables (sexid, gdp_per_capita, countryid, agegroupid, year - excluding Generationid).
+
+## Bagged CART
+
+Here we use Bagging Model to check for features prediction accuracies.
+
+```{r treebag,echo=FALSE}
+control <- rfeControl(functions=treebagFuncs, method="cv", number=10)
+## RMSE
+resultstreebagall <- rfe(alldata[,1:6], alldata[[7]], sizes=c(1:6), rfeControl=control)
+predictors(resultstreebagall) %>% data.frame() %>% knitr::kable(col.names=c("Variables selected")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))%>% footnote(general = "Variables for Best RMSE")
+plot(resultstreebagall, type=c("g", "o"))
+res2 <- resultstreebagall$results$RMSE %>% data.frame() %>% mutate(n=row_number()) %>% arrange(.) %>% filter(row_number()==2)
+## Accuracy
+resultstreebagallf <- rfe(alldata[,1:6], alldata[[8]], sizes=c(1:6), rfeControl=control)
+predictors(resultstreebagallf) %>% data.frame() %>% knitr::kable(col.names=c("Variables selected")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))%>% footnote(general = "Variables for Best Accuracy")
+plot(resultstreebagallf, type=c("g", "o"))
+res1 <- resultstreebagallf$results$Accuracy %>% data.frame() %>% mutate(n=row_number()) %>% arrange(desc(.)) %>% filter(row_number()==2)
+results <- bind_rows(results,data.frame(method = "Bagged CART",
+              Accu = round(max(resultstreebagallf$results$Accuracy*100),2), 
+              RMSE =  round(min(resultstreebagall$results$RMSE),2), 
+              Accu_vars = dim(data.frame((predictors(resultstreebagallf))))[1], 
+              rmse_vars = dim(data.frame((predictors(resultstreebagall))))[1],
+              Sec_accu = round(res1$.*100,2),
+              Sec_RMSE = round(res2$.,2),
+              Sec_accu_Vars = res1$n,
+              Sec_rmse_vars = res2$n))
+rm(resultstreebagall,resultstreebagallf,res1,res2)
+```
+
+A minimum RMSE of little less than 15 with all 6 variables.An accuracy of about 75% with all 6 variables. RMSE did not fare as well as Bagged CART, but we got better accuracy.
+
+## Naive Bayes
+
+We now attempt Naive bayes algorith to estimate the accuracy measures using RFE.
+
+```{r nb,echo=FALSE}
+control <- rfeControl(functions=nbFuncs, method="cv", number=10)
+## Accuracy
+resultsnballf <- rfe(alldata[c(1:6)], alldata[[8]], sizes=c(1:6), rfeControl=control)
+predictors(resultsnballf) %>% data.frame() %>% knitr::kable(col.names=c("Variables selected")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+plot(resultsnballf, type=c("g", "o"))
+res1 <- resultsnballf$results$Accuracy %>% data.frame() %>% mutate(n=row_number()) %>% arrange(desc(.)) %>% filter(row_number()==2)
+results <- bind_rows(results,data.frame(method = "Naive Bayes",
+              Accu = round(max(resultsnballf$results$Accuracy*100),2), 
+              Accu_vars = dim(data.frame((predictors(resultsnballf))))[1],
+              Sec_accu = round(res1$.*100,2),
+              Sec_accu_Vars = res1$n))
+rm(resultsnballf,res1)
+```
+
+A Peak Accuracy of more than 40% is found with all variables. 
+
+# Add more features
+
+Add more features from world data to suicide data and see if any of those new features help improve our model. We add the following features from world data:   
+Economy    
+Continent    
+Sub-Region    
+Income Level    
+
+```{r add_eco,echo=FALSE}
+newalldata <- alldata %>% inner_join(data.frame(world_data),by=c("countryid"))
+trainallmore <- newalldata %>% filter(year <= 2014)
+testallmore <- newalldata %>% filter(year == 2015)
+```
+
+## Find High correlation instances with added world data
+
+```{r find_cor2,echo=FALSE}
+corMatrixall <- cor(newalldata[c(1:6,9:12)])
+highCorallmore <- findCorrelation(corMatrixall, cutoff=0.5)
+highCorallmore %>% knitr::kable(col.names=c("Features Highly Correlated")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+rm(corMatrixall,highCorallmore)
+```
+
+We dont find any highly correlated data even with added features.
+
+## Random Forest - More Variables
+
+We achieved an accuracy of about 72% before. We now perform RFE again with more variables and see if this method can take advantage of additional features available.
+
+```{r rf2,echo=FALSE}
+control <- rfeControl(functions=rfFuncs, method="cv",number=10)
+## Accuracy
+resultsrfallmoref <- rfe(newalldata[c(1:6,9:12)], newalldata[[8]], sizes=c(1:10), rfeControl=control)
+predictors(resultsrfallmoref) %>% data.frame() %>% knitr::kable(col.names=c("Variables selected")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+plot(resultsrfallmoref, type=c("g", "o"))
+res1 <- resultsrfallmoref$results$Accuracy %>% data.frame() %>% mutate(n=row_number()) %>% arrange(desc(.)) %>% filter(row_number()==2)
+results <- bind_rows(results,data.frame(method = "Random Forest - More Variables",
+              Accu = round(max(resultsrfallmoref$results$Accuracy*100),2), 
+              Accu_vars = dim(data.frame((predictors(resultsrfallmoref))))[1],
+              Sec_accu = round(res1$.*100,2),
+              Sec_accu_Vars = res1$n))
+rm(res1)
+```
+
+Peak Accuracy of little less than 77% with 10 predictors and about 76% with 6 (sexid, countryid, agegroupid, subregion_id, gdp_per_capita,year). This is the best accuracy we could achieve with about four full percentage points above the earlier estimate. Even with 6 variables we see a better accuracy than before.
+
+## Bagged CART - More Variables
+
+We got the best accuracy earlier with 6 variable. But we did not get a good RMSE. We will check if addition of more features would give us a better Accuracy and lower RMSE.
+
+```{r treebag2,echo=FALSE}
+control <- rfeControl(functions=treebagFuncs, method="cv", number=10)
+## RMSE
+resultstreebagallmore <- rfe(newalldata[c(1:6,9:12)], newalldata[[7]], sizes=c(1:10), rfeControl=control)
+predictors(resultstreebagallmore) %>% data.frame() %>% knitr::kable(col.names=c("Variables selected")) %>% kable_styling(bootstrap_options = c("striped", "condensed")) %>% footnote(general = "Variables for Best RMSE")
+plot(resultstreebagallmore, type=c("g", "o"))
+res2 <- resultstreebagallmore$results$RMSE %>% data.frame() %>% mutate(n=row_number()) %>% arrange(.) %>% filter(row_number()==2)
+## Accuracy
+resultstreebagallmoref <- rfe(newalldata[c(1:6,9:12)], newalldata[[8]], sizes=c(1:10), rfeControl=control)
+predictors(resultstreebagallmoref) %>% data.frame() %>% knitr::kable(col.names=c("Variables selected")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))%>% footnote(general = "Variables for Best Accuracy")
+plot(resultstreebagallmoref, type=c("g", "o"))
+res1 <- resultstreebagallmoref$results$Accuracy %>% data.frame() %>% mutate(n=row_number()) %>% arrange(desc(.)) %>% filter(row_number()==2)
+results <- bind_rows(results,data.frame(method = "Bagged Tree - More Variables",
+              Accu = round(max(resultstreebagallmoref$results$Accuracy*100),2), 
+              RMSE =  round(min(resultstreebagallmore$results$RMSE),2), 
+              Accu_vars = dim(data.frame((predictors(resultstreebagallmoref))))[1], 
+              rmse_vars = dim(data.frame((predictors(resultstreebagallmore))))[1],
+              Sec_accu = round(res1$.*100,2),
+              Sec_RMSE = round(res2$.,2),
+              Sec_accu_Vars = res1$n,
+              Sec_rmse_vars = res2$n))
+rm(resultstreebagallmore,resultstreebagallmoref,res1,res2)
+```
+
+A Peak accuracy of little less than 76% with all 10 variables.This is half point better accuracy than we found with the original 6 variables.
+Lowest RMSE of little less than 13 is achieved with all 10 variables with Bagged Tree. This is a 2 point improvement from the RMSE we achieved Treegabg before with 6 original variables.
+
+## Linear Discriminant Analysis - More Variables
+
+This RFE will use the LDA functions to predict accuracy.
+
+```{r lda2,echo=FALSE}
+control <- rfeControl(functions=ldaFuncs, method="cv", number=10)
+## Accuracy
+resultsldaallmoref <- rfe(newalldata[c(1:6,9:12)], newalldata[[8]], sizes=c(1:10), rfeControl=control)
+predictors(resultsldaallmoref) %>% data.frame() %>% knitr::kable(col.names=c("Variables selected")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+plot(resultsldaallmoref, type=c("g", "o"))
+res1 <- resultsldaallmoref$results$Accuracy %>% data.frame() %>% mutate(n=row_number()) %>% arrange(desc(.)) %>% filter(row_number()==2)
+results <- bind_rows(results,data.frame(method = "LDA - More Variables",
+              Accu = round(max(resultsldaallmoref$results$Accuracy*100),2), 
+              Accu_vars = dim(data.frame((predictors(resultsldaallmoref))))[1],
+              Sec_accu = round(res1$.*100,2),
+              Sec_accu_Vars = res1$n))
+rm(resultsldaallmoref,res1)
+```
+
+Peak Accuracy of more than 40% is achieved with all 10 variables
+
+## Naive Bayes - More Variables
+
+This Classification model would be run with Naive Bayes to find the best accuracy that can be achieved with more features added to the Suicides data.
+
+```{r nb2,echo=FALSE}
+control <- rfeControl(functions=nbFuncs, method="cv", number=10)
+## Accuracy
+resultsnballmoref <- rfe(newalldata[c(1:6,9:12)], newalldata[[8]], sizes=c(1:10), rfeControl=control)
+predictors(resultsnballmoref) %>% data.frame() %>% knitr::kable(col.names=c("Variables selected")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+plot(resultsnballmoref, type=c("g", "o"))
+res1 <- resultsnballmoref$results$Accuracy %>% data.frame() %>% mutate(n=row_number()) %>% arrange(desc(.)) %>% filter(row_number()==2)
+results <- bind_rows(results,data.frame(method = "Naive Bayes - More Variables",
+              Accu = round(max(resultsnballmoref$results$Accuracy*100),2), 
+              Accu_vars = dim(data.frame((predictors(resultsnballmoref))))[1],
+              Sec_accu = round(res1$.*100,2),
+              Sec_accu_Vars = res1$n))
+rm(resultsnballmoref,res1)
+```
+
+A Peak accuracy of little less than 48% is achieved with 9 variables.
+
+## Linear Model 
+
+We will use Linear Model for simple regression of the data and look for the best RMSE. 
+
+```{r lm2,echo=FALSE}
+control <- rfeControl(functions=lmFuncs, method="cv", number=10)
+## RMSE
+resultslmallmore <- rfe(newalldata[c(1:6,9:12)], newalldata[[7]], sizes=c(1:10), rfeControl=control)
+predictors(resultslmallmore) %>% data.frame() %>% knitr::kable(col.names=c("Variables selected")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+plot(resultslmallmore, type=c("g", "o"))
+res2 <- resultslmallmore$results$RMSE %>% data.frame() %>% mutate(n=row_number()) %>% arrange(.) %>% filter(row_number()==2)
+results <- bind_rows(results,data.frame(method = "LM - More Variables",
+              RMSE = round(max(resultslmallmore$results$RMSE),2), 
+              rmse_vars = dim(data.frame((predictors(resultslmallmore))))[1],
+              Sec_RMSE = round(res2$.,2),
+              Sec_rmse_vars = res2$n))
+rm(resultslmallmore,res2)
+```
+
+Lowest RMSE of more than 17 is found with 10 variables
+
+# RFE Results Summary 
+
+Table below summarizes the several RMSE and Accuracy estimates we calculated using RFE. We pick a reasonably suitable model for the purpose of training our data.
+
+```{r summary,echo=FALSE}
+results %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+```
+
+# Model Selection
+
+Our model selection criterion would be to select a model that performs reasonably well with lowest possible number of variables. Random Forest models performed well for both kinds of measurements. 
+We can use the Random Forest method with RMSE when we consider suicides rates data as continious data or "Random Forest - More Variables" (Third best Accuracy one with 6 variables) for finding Accuracy with categorized Suicide data.
+
+## Create a Classification Model with the 6 predictors from the RFE ressults and predict with test data
+
+We select the features that gave us a relatively good performance with much less number of features. We model based on the data until 2014 and perform a prediction for 2015 data and compare the predicted suicide rates against the actual rates.
+We use Repeated Cross Validattion for training the model.   
+Following parameters are used:   
+metric: Accuracy (By default used for factorised data)    
+method: rf   
+number: 10   
+repeats: 3   
+ntree: 100   
+tunelength: 10    
+search: random    
+
+### Classification Model With First Set of Tuning Parameters
+
+```{r tune01,echo=FALSE}
+newtest <- newalldata[predictors(resultsrfallmoref)[1:6]]
+newtestdata <- newalldata[c(predictors(resultsrfallmoref)[1:6],"suicides_intensity")]
+newtrain <- newtestdata %>% filter(year <= 2014)
+newtest <- newtestdata %>% filter(year == 2015)
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="random")
+seed <- 7
+fit.rfcattrainplus_tune <- train(suicides_intensity ~., newtrain, 
+                                  method = "rf", 
+                                  trControl = control,
+                                  tuneLength = 10,
+                                  ntree = 100)
+```
+-------------------------------------------------------
+```{r tune02,echo=FALSE}
+fit.rfcattrainplus_tune$results %>% data.frame() %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+fit.rfcattrainplus_tune$finalModel
+```
+
+### Apply the above model to the test data for 2015 and predict the Suicide Intensity
+
+-------------------------------------------------------
+
+```{r tune03,echo=FALSE}
+predictions_rfcattrainplus_tune <- predict(fit.rfcattrainplus_tune, newdata=newtest)
+cm <- confusionMatrix(data = predictions_rfcattrainplus_tune, reference = newtest$suicides_intensity)
+cm$table %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+cm$overall %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+rm(fit.rfcattrainplus_tune,predictions_rfcattrainplus_tune)
+```
+
+An accuracy of about 73% is achieved, but the model seems to be little overtrained. The variation in accuracies could be because the 2015 data does not include few countries that were part of the trained model. Mtry value of about 3 or 4, which would be about the default value is resulting in better models.
+We increase the number of trees to 200 and perform training with mtry of 3.46. We expect better accuracy of the model as well as predictions.
+
+## Create a Classification Model with 200 number of trees
+
+We select the features that gave us a relatively good performance with much less number of features. We model based on the data until 2014 and perform a prediction for 2015 data and compare the predicted suicide rates against the actual rates.
+We use Repeated Cross Validattion for training the model.   
+Following parameters are used:   
+metric: Accuracy (By default used for factorised data)    
+method: rf   
+number: 10   
+repeats: 3   
+ntree: 200   
+tunegrid: 3.46    
+search: random    
+
+### Trees 200: Classification Model With 200 trees
+
+```{r tune11,echo=FALSE}
+newtest <- newalldata[predictors(resultsrfallmoref)[1:6]]
+newtestdata <- newalldata[c(predictors(resultsrfallmoref)[1:6],"suicides_intensity")]
+newtrain <- newtestdata %>% filter(year <= 2014)
+newtest <- newtestdata %>% filter(year == 2015)
+mtry <- sqrt(ncol(testallmore))
+tunegrid <- expand.grid(.mtry=mtry)
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="random")
+seed <- 7
+fit.rfcattrainplus_tune <- train(suicides_intensity ~., newtrain, 
+                                  method = "rf", 
+                                  trControl = control,
+                                  tuneGrid = tunegrid,
+                                  ntree = 200)
+```
+-------------------------------------------------------
+```{r tune12,echo=FALSE}
+fit.rfcattrainplus_tune$results %>% data.frame() %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+fit.rfcattrainplus_tune$finalModel
+```
+
+### Trees 200: Apply the above model to the test data
+
+We apply the model to the teset data for 2015 and predict the Suicide Intensity.
+
+### Trees 200: Confusion Matrix and Accuracy estimates for Predictions
+Confusion Matrix for the predictions with test data with NTREE of 200
+
+```{r tune13,echo=FALSE}
+predictions_rfcattrainplus_tune <- predict(fit.rfcattrainplus_tune, newdata=newtest)
+cm <- confusionMatrix(data = predictions_rfcattrainplus_tune, reference = newtest$suicides_intensity)
+cm$table %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+cm$overall %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+rm(fit.rfcattrainplus_tune,predictions_rfcattrainplus_tune)
+```
+
+It is seen that prediction accuracy improved with the model with larger number of trees. We increase the number of trees to 500 and retrain.
+
+## Create a Classification Model with 500 number of trees
+
+We select the features that gave us a relatively good performance with much less number of features. We model based on the data until 2014 and perform a prediction for 2015 data and compare the predicted suicide rates against the actual rates. 
+We use Repeated Cross Validattion for training the model.   
+Following parameters are used:   
+metric: Accuracy (By default used for factorised data)    
+method: rf   
+number: 10   
+repeats: 3   
+ntree: 500   
+tunegrid: 3.46    
+search: random    
+
+### Trees 500: Classification Model With 500 trees
+
+```{r tune21,echo=FALSE}
+newtest <- newalldata[predictors(resultsrfallmoref)[1:6]]
+newtestdata <- newalldata[c(predictors(resultsrfallmoref)[1:6],"suicides_intensity")]
+newtrain <- newtestdata %>% filter(year <= 2014)
+newtest <- newtestdata %>% filter(year == 2015)
+mtry <- sqrt(ncol(testallmore))
+tunegrid <- expand.grid(.mtry=mtry)
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="random")
+seed <- 7
+fit.rfcattrainplus_tune <- train(suicides_intensity ~., newtrain, 
+                                  method = "rf", 
+                                  trControl = control,
+                                  tuneGrid = tunegrid,
+                                  ntree = 500)
+```
+-------------------------------------------------------
+```{r tune22,echo=FALSE}
+fit.rfcattrainplus_tune$results %>% data.frame() %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+fit.rfcattrainplus_tune$finalModel
+```
+
+### Trees 500: Apply the above model to the test data
+We apply the model to the teset data for 2015 and predict the Suicide Intensity.
+
+### Trees 500: Confusion Matrix and Accuracy estimates for Predictions
+Confusion Matrix for the predictions with test data with NTREE of 200
+
+```{r tune23,echo=FALSE}
+predictions_rfcattrainplus_tune <- predict(fit.rfcattrainplus_tune, newdata=newtest)
+cm <- confusionMatrix(data = predictions_rfcattrainplus_tune, reference = newtest$suicides_intensity)
+cm$table %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+cm$overall %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+rm(fit.rfcattrainplus_tune)
+```
+
+Prediction accuracy improved further with the model with 500 number of trees.
+
+### Final Classification Model
+
+RANDOM FOREST
+Number of Classes: 9
+Classes (Suicide Rate Range-Value): 0-2: 1, 2-6: 2, 6-12: 3, 12-20: 4, 20-30: 5, 30-40: 6, 40-60: 7, 60-100: 8, 100+: 9    
+number: 10   
+repeats: 3   
+ntree: 500   
+tunegrid: 3.46    
+search: random    
+Features Used: sexid, countryid, agegroupid, subregion_id,gdp_per_capita,year    
+
+# Summary of Accuracies with predictions on Test data with Random Forest
+
+We find the accuracies with the predictions on test data across different features. Following tables present a overall breakup of accuracies across different feature. These may provide some areas of focus for achieving better accuracies.
+
+```{r acc_results,echo=FALSE}
+testnew <- cbind.data.frame(testallmore,predictions_rfcattrainplus_tune)
+## ACcuracy for each country
+testnew %>% inner_join(country,by=c("countryid")) %>% mutate(correct=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 1, TRUE ~ 0),incorrect=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 0, TRUE ~ 1)) %>% group_by(country) %>% summarize(correct=sum(correct),incorrect=sum(incorrect),accuracy=round(sum(correct)*100/n(),2)) %>% arrange(country) %>% data.frame() %>% head(20) %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+## Accuracy of predictions for both sexes
+testnew %>% mutate(sex=case_when(sexid  == 1 ~ "Female",TRUE ~ "Male"),correct=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 1, TRUE ~ 0),incorrect=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 0, TRUE ~ 1)) %>% group_by(sex) %>% summarize(correct=sum(correct),incorrect=sum(incorrect),accuracy=round(sum(correct)*100/n(),2)) %>% arrange(desc(accuracy)) %>% data.frame() %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+## Accuracy for each age group
+testnew %>% inner_join(age_group,"agegroupid") %>% mutate(correct=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 1, TRUE ~ 0),incorrect=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 0, TRUE ~ 1)) %>% group_by(age) %>% summarize(correct=sum(correct),incorrect=sum(incorrect),accuracy=round(sum(correct)*100/n(),2)) %>% arrange(desc(accuracy)) %>% data.frame() %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+## Accuracy for each economy
+testnew %>% inner_join(economy,"eco_id") %>% mutate(correct=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 1, TRUE ~ 0),incorrect=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 0, TRUE ~ 1)) %>% group_by(economy) %>% summarize(correct=sum(correct),incorrect=sum(incorrect),accuracy=round(sum(correct)*100/n(),2)) %>% arrange(desc(accuracy)) %>% data.frame() %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+## Accuracy for each income group
+testnew %>% inner_join(income_grp,"ig_id") %>% mutate(correct=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 1, TRUE ~ 0),incorrect=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 0, TRUE ~ 1)) %>% group_by(income_grp) %>% summarize(correct=sum(correct),incorrect=sum(incorrect),accuracy=round(sum(correct)*100/n(),2)) %>% arrange(desc(accuracy)) %>% data.frame() %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+## Accuracy for each continent
+testnew %>% inner_join(continent,"continent_id") %>% mutate(correct=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 1, TRUE ~ 0),incorrect=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 0, TRUE ~ 1)) %>% group_by(continent) %>% summarize(correct=sum(correct),incorrect=sum(incorrect),accuracy=round(sum(correct)*100/n(),2)) %>% arrange(desc(accuracy)) %>% data.frame() %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+## Accuracy for each Subregion
+testnew %>% inner_join(subregion,"subregion_id") %>% mutate(correct=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 1, TRUE ~ 0),incorrect=case_when(as.numeric(suicides_intensity)-as.numeric(predictions_rfcattrainplus_tune) == 0 ~ 0, TRUE ~ 1)) %>% group_by(subregion) %>% summarize(correct=sum(correct),incorrect=sum(incorrect),accuracy=round(sum(correct)*100/n(),2)) %>% arrange(desc(accuracy)) %>% data.frame() %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+rm(predictions_rfcattrainplus_tune)
+```
+
+# Regression Model for minimizing RMSE
+
+We achieved an RMSE of about 11 before. We used simple Cross Validation at 10 during the RFE. Now we use Repeated Cross Validation with 3 repeats. As the training is slow as a results of the number of variables, we limit the number of trees to 100.
+
+```{r rmse01,echo=FALSE}
+newtrain <- trainall
+newtest <- testall
+newtrain$suicide_intensity <- NULL
+newtest$suicide_intensity <- NULL
+control <- trainControl(method="repeatedcv", number=5, repeats=3, search="random")
+seed <- 7
+fit.rfrmsetrainplus_tune <- train(suic_rate ~., newtrain, 
+                                  method = "rf", 
+                                  tuneLength = 10,
+                                  trControl = control,
+                                  ntree = 100)
+```
+```{r rmse02,echo=FALSE}
+fit.rfrmsetrainplus_tune$results %>% data.frame() %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+fit.rfrmsetrainplus_tune$finalModel
+fit.rfrmsetrainplus_tune$method %>% data.frame() %>% knitr::kable(col.names = c("Method")) %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+```
+
+### Apply the above model to the test data for 2015 and predict the Suicide Rate
+
+```{r rmse03,echo=FALSE}
+predictions_rfrmsetrainplus_tune <- predict(fit.rfrmsetrainplus_tune, newdata=newtest)
+rm(fit.rfrmsetrainplus_tune)
+```
+
+There is a dramatic improvement in the RMSE with mtry values of around 10 with 100 trees. We achieved the best RMSE of about 3.
+
+### FINAL REGRESSION MODEL
+
+RANDOM FOREST   
+number: 5   
+repeats: 3   
+ntree: 100   
+mtry: 10    
+search: random    
+Features Used: sexid, gdp_per_capita, countryid, year, agegroupid, generationid    
+
+## RMSE across different features in the test data.
+
+Following tables summarize the overall RMSE on the test data when the model is applied and the RMSEs we achieved across different features. 
+
+```{r check,echo=FALSE}
+testnew <- cbind.data.frame(newtest,predictions_rfrmsetrainplus_tune)
+testnew %>% inner_join(country,by="countryid") %>% mutate(diff = predictions_rfrmsetrainplus_tune-suic_rate) %>% group_by(country) %>% summarize(rmse=sqrt(mean(diff^2)))  %>% head(10) %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+testnew %>% mutate(sex=case_when(sexid  == 1 ~ "Female",TRUE ~ "Male"),diff = predictions_rfrmsetrainplus_tune-suic_rate) %>% group_by(sex) %>% summarize(rmse=sqrt(mean(diff^2))) %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+testnew %>% inner_join(age_group,"agegroupid") %>% mutate(diff = predictions_rfrmsetrainplus_tune-suic_rate) %>% group_by(age) %>% summarize(rmse=sqrt(mean(diff^2))) %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+testnew %>% inner_join(generation,"generationid") %>% mutate(diff = predictions_rfrmsetrainplus_tune-suic_rate) %>% group_by(generation) %>% summarize(rmse=sqrt(mean(diff^2))) %>% knitr::kable() %>% kable_styling(bootstrap_options = c("striped", "condensed"))
+rm(predictions_rfrmsetrainplus_tune)
+```
+
+```{r cleanup,echo=FALSE}
+rm(suicide_data,world_data,world_new,world_points,country,generation,economy,age_group,continent,subregion,alldata,newalldata,trainall,testall,trainallmore,testallmore,resultsrfallmoref)
+```
+
+# Conclusion
+
+World suicides data is used to prepare regression as well as classification models and estimate RMSE and Accuracies. Several methods are applied to the training data and the model best suited for the data is selected using Recursive Feature Elimination process.
+Attempt is made to enhance the data by adding more features in order to peform better analysis. RFE helps to minimise the number of features used in the prediction algorithm to achieve a reasonably better performing model with lower number of features. It is found that suicide rates among male are three times more than women and they rise with age. Regional variations in suicide rates across the world are shown. These could be attributed to different socia-economic factors in those regions.
+We could make major improvemnts in the RMSE and Accuracies using the Random Forest models using Repeated Cross Validation and selected the best models to perform predictions on the world's suicide data.
+
