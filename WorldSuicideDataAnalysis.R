@@ -5,6 +5,13 @@
 # Note: World Geo-spatial data is used to present disparities on the world map. Required software would need to be installed in the machine running this program.
 
 # Load all the required packages
+################################           IMPORTANT            #################################
+# Geospatial packages. ggplot2 requires the following packages.                                 #
+# These should be installed prior to running the following as part of preparing the environment.#
+# install.packages("ggspatial")                                                                 #
+# install.packages(c("cowplot", "googleway", "ggrepel", "libwgeom"))                            #
+#################################################################################################
+
 if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
 if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
 if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
